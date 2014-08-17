@@ -9,6 +9,7 @@
  */
 
  /**
+ * https://github.com/gregmolnar/yii-attachment-behavior#usage
  * This behaviour will let you add attachments to your model  easily
  * you will need to add the following database fields to your model:
  * filename string
@@ -40,8 +41,7 @@
  * @private integer $filesize 
  * @private string $parsedPath
  * */
-class AttachmentBehavior extends CActiveRecordBehavior {    
-    
+class AttachmentBehavior extends CActiveRecordBehavior {
     /**
      * @property string folder to save the attachment
      */ 
@@ -79,6 +79,18 @@ class AttachmentBehavior extends CActiveRecordBehavior {
     
     private $file_extension, $filename;
     
+    /**
+     * @property array $exif_imagetypes to determine what is the real image extension.
+     */
+    private static $exif_imagetypes = [
+        1 => 'gif',
+        2 => 'jpg',
+        3 => 'png',
+        6 => 'bmp',
+        17 => 'ico'
+    ];
+
+
     /**
      * getter method for the attachment.
      * if you call it like a property ($model->Attachment) it will return the base size.
@@ -142,8 +154,8 @@ class AttachmentBehavior extends CActiveRecordBehavior {
     public function deleteAttachment()
     {
         if(file_exists($this->Owner->{$this->attribute}))unlink($this->Owner->{$this->attribute});
-        preg_match('/\.(.*)$/',$this->Owner->{$this->attribute},$matches);
-        $this->file_extension = end($matches);
+        $ext = explode('.', $this->Owner->{$this->attribute});
+        $this->file_extension = array_pop($ext);
         if(!empty($this->styles)){
             $this->path = str_replace('.:ext','-:custom.:ext',$this->path);    
             foreach($this->styles as $style => $size){
@@ -161,74 +173,114 @@ class AttachmentBehavior extends CActiveRecordBehavior {
     
     public function afterSave($event)
     {
-        $file = AttachmentUploadedFile::getInstance($this->Owner,$this->attribute);
-        if(!is_null($file)){
-            if(!$this->Owner->isNewRecord){
-                //delete previous attachment
-                if(file_exists($this->Owner->{$this->attribute}))unlink($this->Owner->{$this->attribute});
-            }else{
-                $this->Owner->isNewRecord = false;
-            }
-            preg_match('/\.(.*)$/',$file->name,$matches);
-            $this->file_extension = end($matches);
-            $this->filename = $file->name;
-            $path = $this->parsedPath;
+        if ($file = AttachmentUploadedFile::getInstance($this->Owner,$this->attribute)) {
+            $prepare_func = "prepareUpload";
+        } else if ($file = AttachmentFromUrl::getInstance($this->Owner,$this->attribute)) {
+            $prepare_func = "prepareFromUrl";
+        } else {
+            return true;    
+        }
         
-            preg_match('|^(.*[\\\/])|', $path, $match);
-            $folder = end($match);      
-            if(!is_dir($folder))mkdir($folder, 0777, true);
-        
-            $file->saveAs($path,false);
-            $file_type = filetype($path);       
-            $this->Owner->saveAttributes(array($this->attribute => $path));
-            $attributes = $this->Owner->attributes;
-            
-            if(array_key_exists('file_size', $attributes)){
-                $this->Owner->saveAttributes(array('file_size' => filesize($path)));
-            }
-            if(array_key_exists('file_type', $attributes)){
-                $this->Owner->saveAttributes(array('file_type' => mime_content_type($path)));
-            }
-            if(array_key_exists('extension', $attributes)){
-                $this->Owner->saveAttributes(array('extension' => $this->file_extension));
-            }        
-        
-            #processors
-            if(!empty($this->processors)){
-                foreach($this->processors as $processor){
-                    $p = new $processor['class']($path);
-                    $p->output_path = $path;
-                    $p->{$processor['method']}($processor['params']);
-                }
-            }        
-            /**
-             * process resize if we have multiple sizes
-             */
-            if(!empty($this->styles)){
-                $this->path = str_replace('.:ext','-:custom.:ext',$this->path);                
-                if(class_exists('Imagick',false)){
-                    $processor = new ImagickProcessor($path);
-                }else{
-                    if(!function_exists("gd_info"))
-                        throw new CException ('GD or Imagick extension needs to image resize.');
-                    $processor = new GDProcessor($path);                    
-                }
-                // if the dimensions start with an ! the keepratio will be false
-                foreach($this->styles as $style => $size){
-                    $processor->output_path = $this->getParsedPath($style);
-                    $s = explode('x',$size);
-                    if($s[0][0] == '!'){
-                        $s[0] = ltrim($s[0], '!');
-                        $keepratio = false;
-                    }else{
-                        $keepratio = true;
-                    }
-                    $processor->resize(array('width' => $s[0], 'height' => $s[1], 'keepratio' => $keepratio));
-                }
+        if($this->Owner->isNewRecord){
+            $this->Owner->isNewRecord = false;
+        }else{
+            //delete previous attachment
+            if(file_exists($this->Owner->{$this->attribute})) {
+                unlink($this->Owner->{$this->attribute});
             }
         }
+        $this->{$prepare_func}($file);
+
+        $path = $this->parsedPath;
+        $base_path = Yii::app()->basePath.'/../';
+        $full_bath = $base_path.$path;
+        preg_match('|^(.*[\\\/])|', $full_bath, $match);
+        $folder = end($match);      
+        if(!is_dir($folder))mkdir($folder, 0777, true);
+
+        $file->saveAs($full_bath,false);
+
+        //checking the file extinsion.
+        $ext_int = exif_imagetype($full_bath);
+        if (isset(self::$exif_imagetypes[$ext_int])){
+            $ext = self::$exif_imagetypes[$ext_int];
+            if ($ext != $this->file_extension){
+              $old_path = $full_bath;
+              $this->file_extension = $ext;
+              $full_bath = $base_path.$this->parsedPath;
+              rename($old_path, $full_bath);
+            }
+        } else {
+            throw new CException('This is not an image that we can process.');
+        }
+
+        //we dont need full path here
+        $this->Owner->saveAttributes(array($this->attribute => $path));
+
+        $attributes = $this->Owner->attributes;
+        if(array_key_exists('file_size', $attributes)){
+            $this->Owner->saveAttributes(array('file_size' => filesize($full_bath)));
+        }
+        if(array_key_exists('file_type', $attributes)){
+            $this->Owner->saveAttributes(array('file_type' => mime_content_type($full_bath)));
+        }
+        if(array_key_exists('extension', $attributes)){
+            $this->Owner->saveAttributes(array('extension' => $this->file_extension));
+        }        
+        
+        #processors
+        if(!empty($this->processors)){
+            foreach($this->processors as $processor){
+                $p = new $processor['class']($full_bath);
+                $p->output_path = $full_bath;
+                $p->{$processor['method']}($processor['params']);
+            }
+        }        
+        /**
+         * process resize if we have multiple sizes
+         */
+        if(!empty($this->styles)){
+            $this->path = str_replace('.:ext','-:custom.:ext',$this->path);                
+            if(class_exists('Imagick',false)){
+                $processor = new ImagickProcessor($full_bath);
+            }else{
+                if(!function_exists("gd_info"))
+                    throw new CException ('GD or Imagick extension needs to image resize.');
+                $processor = new GDProcessor($full_bath);                    
+            }
+            // if the dimensions start with an ! the keepratio will be false
+            foreach($this->styles as $style => $size){
+                $processor->output_path = $base_path.$this->getParsedPath($style);
+                $s = explode('x',$size);
+                if($s[0][0] == '!'){
+                    $s[0] = ltrim($s[0], '!');
+                    $keepratio = false;
+                }else{
+                    $keepratio = true;
+                }
+                $processor->resize(array('width' => $s[0], 'height' => $s[1], 'keepratio' => $keepratio));
+            }
+        }
+        
         return true;
     }
+
+    protected function prepareUpload($file) {
+        preg_match('/\.(.*)$/',$file->name,$matches);
+        $ext = explode('.', $file->name);
+        $this->file_extension = array_pop($ext);
+        $this->filename = $file->name;
+    }
+
+    protected function prepareFromUrl($file) {
+        $url = $file->url;
+        $parsed_url = explode('/', $url);
+        $file_name = explode('?', array_pop($parsed_url))[0];
+        $file_name = explode('.', $file_name);
+        $this->file_extension = array_pop($file_name);
+        $this->filename = array_shift($file_name);
+    }
+
 
     public function getParsedPath($custom = '')
     {
@@ -283,6 +335,30 @@ class AttachmentUploadedFile
     }
 }
 
+
+class AttachmentFromUrl
+{
+    public $url;
+
+    public static function getInstance($model, $attribute){
+        $c =  new AttachmentFromUrl;
+        if (filter_var($model->{$attribute}, FILTER_VALIDATE_URL) === false) return null;
+        $c->url = $model->{$attribute};
+        return $c;
+    }
+    
+    public function saveAs($path){
+        try {
+            $file = file_get_contents($this->url);
+            return file_put_contents($path, $file) !== false;
+        } catch (CException $e) {
+            return false;
+        }
+    }
+}
+
+
+
 /**
  * GD Imageprocessor
  */ 
@@ -294,8 +370,8 @@ class GDProcessor
     public function __construct($image)
     {
         $this->image = $image;
-        preg_match('/\.(.*)$/',$this->image,$matches);
-        $this->file_extension = end($matches);    
+        $path_parts = explode('.', $this->image);
+        $this->file_extension = array_pop($path_parts);
     }
     
     public function resize($params)
@@ -356,8 +432,8 @@ class ImagickProcessor
     public function __construct($image)
     {
         $this->image = $image;
-        preg_match('/\.(.*)$/',$this->image,$matches);
-        $this->file_extension = end($matches);
+        $ext = explode('.', $this->image);
+        $this->file_extension = array_pop($ext);
     }
     
     /**
