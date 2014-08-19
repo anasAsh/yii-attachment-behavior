@@ -193,22 +193,22 @@ class AttachmentBehavior extends CActiveRecordBehavior {
 
         $path = $this->parsedPath;
         $base_path = Yii::app()->basePath.'/../';
-        $full_bath = $base_path.$path;
-        preg_match('|^(.*[\\\/])|', $full_bath, $match);
+        $full_path = $base_path.$path;
+        preg_match('|^(.*[\\\/])|', $full_path, $match);
         $folder = end($match);      
         if(!is_dir($folder))mkdir($folder, 0777, true);
 
-        $file->saveAs($full_bath,false);
+        $file->saveAs($full_path,false);
 
         //checking the file extinsion.
-        $ext_int = exif_imagetype($full_bath);
+        $ext_int = exif_imagetype($full_path);
         if (isset(self::$exif_imagetypes[$ext_int])){
             $ext = self::$exif_imagetypes[$ext_int];
             if ($ext != $this->file_extension){
-              $old_path = $full_bath;
+              $old_path = $full_path;
               $this->file_extension = $ext;
-              $full_bath = $base_path.$this->parsedPath;
-              rename($old_path, $full_bath);
+              $full_path = $base_path.$this->parsedPath;
+              rename($old_path, $full_path);
             }
         } else {
             throw new CException('This is not an image that we can process.');
@@ -219,10 +219,10 @@ class AttachmentBehavior extends CActiveRecordBehavior {
 
         $attributes = $this->Owner->attributes;
         if(array_key_exists('file_size', $attributes)){
-            $this->Owner->saveAttributes(array('file_size' => filesize($full_bath)));
+            $this->Owner->saveAttributes(array('file_size' => filesize($full_path)));
         }
         if(array_key_exists('file_type', $attributes)){
-            $this->Owner->saveAttributes(array('file_type' => mime_content_type($full_bath)));
+            $this->Owner->saveAttributes(array('file_type' => mime_content_type($full_path)));
         }
         if(array_key_exists('extension', $attributes)){
             $this->Owner->saveAttributes(array('extension' => $this->file_extension));
@@ -231,8 +231,8 @@ class AttachmentBehavior extends CActiveRecordBehavior {
         #processors
         if(!empty($this->processors)){
             foreach($this->processors as $processor){
-                $p = new $processor['class']($full_bath);
-                $p->output_path = $full_bath;
+                $p = new $processor['class']($full_path);
+                $p->output_path = $full_path;
                 $p->{$processor['method']}($processor['params']);
             }
         }        
@@ -242,11 +242,11 @@ class AttachmentBehavior extends CActiveRecordBehavior {
         if(!empty($this->styles)){
             $this->path = str_replace('.:ext','-:custom.:ext',$this->path);                
             if(class_exists('Imagick',false)){
-                $processor = new ImagickProcessor($full_bath);
+                $processor = new ImagickProcessor($full_path);
             }else{
                 if(!function_exists("gd_info"))
                     throw new CException ('GD or Imagick extension needs to image resize.');
-                $processor = new GDProcessor($full_bath);                    
+                $processor = new GDProcessor($full_path);                    
             }
             // if the dimensions start with an ! the keepratio will be false
             foreach($this->styles as $style => $size){
